@@ -2,16 +2,16 @@
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading.Tasks;
+using Application.CommandHandler;
+using Application.Commands;
+using Application.QueryHandler;
+using Domain;
+using Domain.DTOs;
+using Domain.Models;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
-using PermissionsWebApi.Application;
-using PermissionsWebApi.Application.CommandHandler;
-using PermissionsWebApi.Application.QueryHandler;
-using PermissionsWebApi.Configuration;
-using PermissionsWebApi.Data;
-using PermissionsWebApi.DTOs;
-using PermissionsWebApi.Models;
+using PermissionsWebApi.Kafka;
 
 namespace PermissionsWebApi.Controllers
 {
@@ -19,23 +19,28 @@ namespace PermissionsWebApi.Controllers
     [ApiController]
     public class PermissionsController : ControllerBase
     {
-        private readonly IUnitOfWork _unitOfWork;
         private readonly ICommandHandler<PermissionDTO> _permissionCommandHandler;
-        private readonly ICommandHandler<RemoveCommand> _removeCommandHandler;
-        private readonly IQueryHandler<Permission, QueryCommand> _permissionQueryHandler;
-
-        public PermissionsController(IUnitOfWork unitOfWork, ICommandHandler<PermissionDTO> permissionCommandHandler, ICommandHandler<RemoveCommand> removeCommandHandler, IQueryHandler<Permission, QueryCommand> permissionQueryHandler)
+        private readonly ICommandHandler<RemoveByIdCommand> _removeCommandHandler;
+        private readonly IQueryHandler<Permission, QueryByIdCommand> _permissionQueryHandler;
+        private readonly IKafkaProducerHandler _kafkaProducerHandler;
+        public PermissionsController(
+            ICommandHandler<PermissionDTO> permissionCommandHandler, 
+            ICommandHandler<RemoveByIdCommand> removeCommandHandler, 
+            IQueryHandler<Permission, QueryByIdCommand> permissionQueryHandler,
+            IKafkaProducerHandler kafkaProducerHandler
+            )
         {
-            _unitOfWork = unitOfWork;
             _permissionCommandHandler = permissionCommandHandler;
             _removeCommandHandler = removeCommandHandler;
             _permissionQueryHandler = permissionQueryHandler;
+            _kafkaProducerHandler = kafkaProducerHandler;
         }
 
         // GET: api/Permissions
         [HttpGet]
         public async Task<ActionResult<IEnumerable<Permission>>> GetPermission()
         {
+            _kafkaProducerHandler.WriteMessage("GET");
             var permissions = await _permissionQueryHandler.GetAll();
             return Ok(permissions);
         }
@@ -44,7 +49,8 @@ namespace PermissionsWebApi.Controllers
         [HttpGet("{id}")]
         public async Task<ActionResult<Permission>> GetPermission(int id)
         {
-            var permission = _permissionQueryHandler.GetOne(new QueryCommand()
+            _kafkaProducerHandler.WriteMessage("GET");
+            var permission = await _permissionQueryHandler.GetOne(new QueryByIdCommand()
             {
                 Id = id
             });
@@ -62,22 +68,13 @@ namespace PermissionsWebApi.Controllers
         [HttpPut("{id}")]
         public async Task<IActionResult> PutPermission(int id, PermissionDTO permission)
         {
+            _kafkaProducerHandler.WriteMessage("PUT");
             if (id != permission.Id)
             {
                 return BadRequest();
             }
 
-            var newPermission = new Permission()
-            {
-                Id = permission.Id,
-                EmployeeForename = permission.EmployeeForename,
-                EmployeeSurname = permission.EmployeeSurname,
-                PermissionDate = permission.PermissionDate,
-                PermissionTypeId = permission.PermissionTypeId
-            };
-
-            _unitOfWork.Permission.Add(newPermission);
-            _unitOfWork.Commit();
+            _permissionCommandHandler.Execute(permission);
             return NoContent();
         }
 
@@ -86,6 +83,7 @@ namespace PermissionsWebApi.Controllers
         [HttpPost]
         public IActionResult PostPermission(PermissionDTO permission)
         {
+            _kafkaProducerHandler.WriteMessage("POST");
             _permissionCommandHandler.Execute(permission);
             return CreatedAtAction("GetPermission", new { id = permission.Id }, permission);
         }
@@ -94,7 +92,8 @@ namespace PermissionsWebApi.Controllers
         [HttpDelete("{id}")]
         public async Task<IActionResult> DeletePermission(int id)
         {
-            _removeCommandHandler.Execute(new RemoveCommand()
+            _kafkaProducerHandler.WriteMessage("DELETE");
+            _removeCommandHandler.Execute(new RemoveByIdCommand()
             {
                 Id = id
             });
